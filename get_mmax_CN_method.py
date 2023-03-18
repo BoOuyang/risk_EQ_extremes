@@ -104,19 +104,73 @@ def jump(source, init, region, Delta, round):
             inddist.reset_index(drop=True, inplace=True)
 
     # plot results
-    buffer = gpd.GeoSeries(buffer)# tranform for easy plot
+    buffer = gpd.GeoSeries(buffer, crs='EPSG:4479')# tranform for easy plot
+    buffer = buffer.to_crs("EPSG:4326")
 
-    #fig, ax = plt.subplots(dpi=800, subplot_kw={'projection': ccrs.PlateCarree()})
-    #source.plot(ax=ax, color='grey', linewidth=0.5, zorder=1)
-    #if(inddist.shape[0]!=0): source.loc[inddist].plot(ax=ax, color='red', linewidth=0.5, zorder=2) 
-    #buffer.plot(ax=ax, color=col_mech(init['rake']), alpha=0.5, zorder=3)
-#
-    #ax.set_aspect('equal')
-    #ax.set_extent([region[0]-1, region[1], region[2]-1, region[3]+1], crs=ccrs.PlateCarree())
-    #ax.add_feature(cfeature.COASTLINE, linewidth=0.3)
-    #plt.ioff()
-    ##fig.savefig('./1_dist_seg'+str(init['id'].iloc[0])+'.pdf')
-    #plt.close(fig)
+    fig, ax = plt.subplots(dpi=800, subplot_kw={'projection': ccrs.PlateCarree()})
+    source.plot(ax=ax, color='grey', linewidth=0.5, zorder=1)
+    if(inddist.shape[0]!=0): source.loc[inddist].plot(ax=ax, color='red', linewidth=0.5, zorder=2) 
+    buffer.plot(ax=ax, color=col_mech(init['rake']), alpha=0.5, zorder=3)
+
+    ax.set_aspect('equal')
+    ax.set_extent([region[0], region[1], region[2], region[3]], crs=ccrs.PlateCarree())
+    ax.add_feature(cfeature.COASTLINE, linewidth=0.3)
+    plt.ioff()
+    fig.savefig('./1_dist_seg'+str(init['id'].iloc[0])+'.pdf')
+    plt.close(fig)
+
+    return inddist
+
+# optimization version of function jump() with python package 'shapely'
+def jump_nearest(source, init, region, Delta, round):
+
+    'create buffer around Delta'
+    'Delta = 5km in the theoretical case but depends in practice on fault database resolution'
+
+    # Input  - source (GeoDataFrame): complete dataset of the strike-slip fault segments   
+    #        - init (GeoDataFrame): the initial cascading sequence at present cascading round
+    #        - region (ndarray): range of plots
+    #        - Delta (float): the maximum distance that allows the jumping of rupture between
+    #                         two independent fault segment
+    #        - round (int): index of cascading round
+    #  
+    # Output - inddist (Series): indices/id of fault segments that satisfy the criteria
+
+
+    # creat buffer around Delta, default buffer resolution = 16
+    buffer = init['geometry'].to_crs(4479).iloc[0].buffer(Delta*1000)# shapely.Polygon
+
+    # get faults in buffer
+    inddist = source['id'].loc[source.to_crs(4479).intersects(buffer)]# indices of source fault segment that intersect with buffer
+    inddist.reset_index(drop=True, inplace=True)
+    if(round == 0):
+        inddist = inddist.loc[inddist!=init['id'].iloc[0]]# remove init.id from inddist in the 1st round (round == 0)
+        inddist.reset_index(drop=True, inplace=True)
+    elif(round > 0):
+        parts = init.iloc[0,3:-1]# cascade sequence(indexs of faults) in init
+        # remove indexes in parts from inddist
+        for values in parts:
+            inddist = inddist.loc[inddist!=values]
+    
+    # remove parts (inital cascade sequence) with different mechanism
+    njump = len(inddist)
+    if(njump > 0):
+        mechinit = mech(init['rake'])# mechanism of fault segement in the initial cascasde sequence
+        mechjump = mech(source['rake'].iloc[inddist])# mechanism of fault segment that intersect with buffer
+        inddist = inddist.loc[mechjump == mechinit]
+        inddist.reset_index(drop=True, inplace=True)
+        
+        # remove parts (inital cascade sequence) with different dip direction
+        njump = len(inddist)
+        if(njump > 0):
+            dipdir_init = dip_dir(init['geometry'])
+            # WARNING: in the case of cascades, sign does not match dip direction,
+            # but depends on the direction of propagation, eg. A+B or B+A
+            # While originally a glitch, it permits to remove redundant cascades!
+            # NB: the dip of cascades cannot be derived from sign
+            dipdir_jump = dip_dir(source['geometry'].iloc[inddist])
+            inddist = inddist.loc[dipdir_jump == dipdir_init]
+            inddist.reset_index(drop=True, inplace=True)
 
     return inddist
 
@@ -147,24 +201,50 @@ def bendbranch(source, init, region, inddist, muD, delta):
         indangle.reset_index(drop=True, inplace=True)
     
     # plot results
-    #if(indangle.shape[0] > 0):
-    #    
-    #    fig = plt.figure(dpi=800)
-    #    ax = plt.subplot(1,1,1,projection=ccrs.PlateCarree())
-    #    source.loc[source['id']!=init['id'].iloc[0]].plot(ax=ax, color='grey', linewidth=0.5, zorder=1)
-    #    source.loc[indangle].plot(ax=ax, color='red', linewidth=0.5, zorder=2)
-    #    init.plot(ax=ax, color=col_mech(init['rake']), linewidth=0.5, alpha=0.7, zorder=3)
-#
-    #    ax.set_aspect('equal')
-    #    ax.set_extent([region[0]-1, region[1], region[2]-1, region[3]+1], crs=ccrs.PlateCarree())
-    #    ax.add_feature(cfeature.COASTLINE, linewidth=0.3)
-#
-    #    plt.ioff()
-    #    #plt.savefig('./2_angle_seg'+str(init['id'].iloc[0])+'.pdf')
-    #    plt.close(fig)
+    if(indangle.shape[0] > 0):
+        
+        fig = plt.figure(dpi=800)
+        ax = plt.subplot(1,1,1,projection=ccrs.PlateCarree())
+        source.loc[source['id']!=init['id'].iloc[0]].plot(ax=ax, color='grey', linewidth=0.5, zorder=1)
+        source.loc[indangle].plot(ax=ax, color='red', linewidth=0.5, zorder=2)
+        init.plot(ax=ax, color=col_mech(init['rake']), linewidth=0.5, alpha=0.7, zorder=3)
+
+        ax.set_aspect('equal')
+        ax.set_extent([region[0], region[1], region[2], region[3]], crs=ccrs.PlateCarree())
+        ax.add_feature(cfeature.COASTLINE, linewidth=0.3)
+
+        plt.ioff()
+        plt.savefig('./2_angle_seg'+str(init['id'].iloc[0])+'.pdf')
+        plt.close(fig)
 
     return indangle
 
+def bendbranch_nearest(source, init, region, inddist, muD, delta):
+
+    # Input  - source (GeoDataFrame): complete dataset of the strike-slip fault segments   
+    #        - init (GeoDataFrame): the initial cascading sequence at present cascading round
+    #        - region (ndarray): range of plots
+    #        - inddist (Series): indices/id of fault segments that satisfy the jump() criteria
+    #        - muD (float): dynamic friction coefficient
+    #        - delta (float [degree]): range of preferred orientation
+    #  
+    # Output - indangle (Series): indices/id of fault segments that satisfy the bendbranch() criteria
+
+    alpha = init['strike'].iloc[0]
+    Psi = (init['rake'].iloc[0]/2.+45.)%90# angle between segment & Smax direction
+    gamma = np.nan# cases when rake not SS or LL-RL combined
+    if((init['rake'].iloc[0] >= 135) & (init['rake'].iloc[0] <= 225)): gamma = 1 # right-lateral
+    if((init['rake'].iloc[0] >= 315) | (init['rake'].iloc[0] <= 45)): gamma = -1 # left-lateral
+    # optimal angle for rupture, psi = np.nan for cases when rake not SS or LL-RL combined
+    psi = gamma*(45-Psi-180*np.arctan(muD)/(2*np.pi))
+
+    if(psi != np.nan):
+        beta = source['strike'].loc[inddist]
+        phi = -1*beta + alpha
+        indangle = source['id'].loc[inddist].loc[(phi >= (psi-delta))&(phi <= (psi+delta))]
+        indangle.reset_index(drop=True, inplace=True)
+
+    return indangle
 # %%
 def LS2P(ls):
 
@@ -279,23 +359,85 @@ def propa(source, init, region, indangle, id_new, round):
 
 
             # plot results
-            #fig = plt.figure(dpi=800)
-            #ax = plt.subplot(1,1,1,projection=ccrs.PlateCarree())
-            #source.plot(ax=ax, color='grey', linewidth=0.5, zorder=1)
-            #cascade.plot(ax=ax, color='red', linewidth=0.5, zorder=2)
-#
-            #ax.set_aspect('equal')
-            #ax.set_extent([region[0]-1, region[1], region[2]-1, region[3]+1], crs=ccrs.PlateCarree())
-            #ax.add_feature(cfeature.COASTLINE, linewidth=0.3)
-#
-            #plt.ioff()
-            ##plt.savefig('./3_propa_seg'+str(init['id'].iloc[0])+'_'+str('{0:05}'.format(id_new))+'.pdf')
-            #plt.close(fig)
+            fig = plt.figure(dpi=800)
+            ax = plt.subplot(1,1,1,projection=ccrs.PlateCarree())
+            source.plot(ax=ax, color='grey', linewidth=0.5, zorder=1)
+            cascade.plot(ax=ax, color='red', linewidth=0.5, zorder=2)
+
+            ax.set_aspect('equal')
+            ax.set_extent([region[0], region[1], region[2], region[3]], crs=ccrs.PlateCarree())
+            ax.add_feature(cfeature.COASTLINE, linewidth=0.3)
+
+            plt.ioff()
+            plt.savefig('./3_propa_seg'+str(init['id'].iloc[0])+'_'+str('{0:05}'.format(id_new))+'.pdf')
+            plt.close(fig)
 
             id_new = id_new + 1
             
     return id_new
+
+
+# %%
+def connect(source, init, region, indangle, id_new, round):
+
+    # Input  - source (GeoDataFrame): complete dataset of the strike-slip fault segments   
+    #        - init (GeoDataFrame): the initial cascading sequence at present cascading round
+    #        - region (ndarray): range of plots
+    #        - indangle (Series): indices/id of fault segments that satisfy the bendbranch() criteria
+    #        - id_new (int): index of each new event during each cacading round
+    #        - round (int): index of cascading round
+    #        - 
+    # Output - id_new (int): index of each new event during each cacading round
+
+    
+    #list_A = LS2P(init['geometry'].iloc[0])# source A (initiator)
+
+    for index, row in source.loc[indangle].iterrows():
+        list_B = LS2P(row['geometry'])# source B (propagator)
+
+        # connect list_A and list_B
+        #list_AB = list_A.append(list_B, ignore_index=True)
+
+        # create cascade source
+        cascade = gpd.GeoDataFrame({'id': ['{0:05}'.format(id_new)],
+                                    'strike': [row['strike']],
+                                    'rake': [row['rake']], 
+                                    'geometry': [row['geometry']]},
+                                   crs='EPSG:4326')
         
+        if(round == 0):
+            cascade['part-0'] = init['id'].iloc[0]
+        elif(round > 0):
+            cascade = cascade.merge(init.iloc[:,3:-1], left_index=True, right_index=True)
+        cascade['part-'+str(round+1)] = row['id']# cascade['part-(round+1)']
+
+        # save files: append GeoDataFrame to .shp & .csv files
+        if(id_new == round*10000):
+            cascade.to_file('./file_cascade_'+str(round)+'.shp')
+        elif(id_new > round*10000):
+            cascade.to_file('./file_cascade_'+str(round)+'.shp', mode='a')
+        
+        cascade.iloc[:,np.delete(np.arange(0,cascade.shape[1]),3)].to_csv('./file_cascade_'+str(round)+'.csv', mode='a', sep='\t', index=False, header=False)
+
+        # plot results
+        fig = plt.figure(dpi=800)
+        ax = plt.subplot(1,1,1,projection=ccrs.PlateCarree())
+        source.plot(ax=ax, color='grey', linewidth=0.5, zorder=1)
+        for i in cascade.iloc[0,4:]:
+            source.iloc[i:i+1].plot(ax=ax, color='red', linewidth=0.5, zorder=2)
+
+        ax.set_aspect('equal')
+        ax.set_extent([region[0], region[1], region[2], region[3]], crs=ccrs.PlateCarree())
+        ax.add_feature(cfeature.COASTLINE, linewidth=0.3)
+
+        plt.ioff()
+        plt.savefig('./3_propa_seg'+str(init['id'].iloc[0])+'_'+str('{0:05}'.format(id_new))+'.pdf')
+        plt.close(fig)
+
+        id_new = id_new + 1
+            
+    return id_new
+
 # %%
 def L2M(L,W):
     A = L*W
@@ -340,6 +482,8 @@ def azimuth_2(point1, point2):
         angle = np.arctan2(np.sin(np.pi/180.*(point2[0] - point1[0]))*np.cos(np.pi/180.*point2[1]), \
                 np.cos(np.pi/180.*point1[1])*np.sin(np.pi/180.*point2[1])- \
                 np.sin(np.pi/180.*point1[1])*np.cos(np.pi/180.*point2[1])*np.cos(np.pi/180.*(point2[0] - point1[0])))
+        #angle = np.arctan2(np.sin(np.radians(point2[0]-point1[0]))*np.cos(np.radians(point2[1])), \
+        #                   )
     else:
         angle = np.arctan2(np.sin(np.pi/180.*(point1[0] - point2[0]))*np.cos(np.pi/180.*point1[1]), \
                 np.cos(np.pi/180.*point2[1])*np.sin(np.pi/180.*point1[1])- \
@@ -348,8 +492,11 @@ def azimuth_2(point1, point2):
     #angle = np.arctan2(np.sin(np.pi/180.*(point2[0] - point1[0]))*np.cos(np.pi/180.*point2[1]), \
     #        np.cos(np.pi/180.*point1[1])*np.sin(np.pi/180.*point2[1])- \
     #        np.sin(np.pi/180.*point1[1])*np.cos(np.pi/180.*point2[1])*np.cos(np.pi/180.*(point2[0] - point1[0])))
+    angle = np.degrees(angle)
+    if (angle<0):
+        angle = angle + 360
 
-    return np.degrees(angle) 
+    return angle
 
 def strike_geometry(data):
     """
@@ -362,9 +509,10 @@ def strike_geometry(data):
     for id, row in data.iterrows():
         strike_single = 0# strike angle for a single fault
         # iterate through each neighbour points pair in geometry
-        for i_p in range(len(row['geometry'].coords)-1):
-            strike_single += azimuth_2(row['geometry'].coords[i_p], row['geometry'].coords[i_p+1])
-        strike_single /= len(row['geometry'].coords)# arithmetic mean
+        strike_single = azimuth_2(row['geometry'].coords[0], row['geometry'].coords[-1])
+        #for i_p in range(len(row['geometry'].coords)-1):
+        #    strike_single += azimuth_2(row['geometry'].coords[i_p], row['geometry'].coords[i_p+1])
+        #strike_single /= (len(row['geometry'].coords)-1)# arithmetic mean
         strike.at[id] = strike_single
 
     data['strike'] = strike
@@ -430,4 +578,7 @@ def fault_txt2shp(path_txt, path_shp):
     #fault_gdf.to_file(path_shp+'/dawanqv.shp')
     return fault_gdf
 
-
+def fault_plot(gdf_fault):
+    fig = plt.figure(dpi=800)
+    ax = plt.subplot(1,1,1)
+    gdf_fault.plot(ax=ax, linewidth=0.2)  
